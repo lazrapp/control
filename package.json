@@ -5,7 +5,8 @@
   "license": "MIT",
   "dependencies": {
     "aws-iot-device-sdk": "^2.2.4",
-    "lodash": "^4.17.15"
+    "lodash": "^4.17.15",
+    "winston": "^3.2.1"
   },
   "scripts": {
     "start": "set DEBUG=* & node index.js"
