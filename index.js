@@ -1,5 +1,6 @@
 const fs = require('fs');
 const aws = require('./services/aws');
+const logger = require('./services/logger');
 
 let auth = {
     ca: fs.readFileSync('./auth/ca.crt'),
@@ -15,3 +16,4 @@ const start = async (options) => {
 };
 
 start(auth);
+logger.info('Started service');

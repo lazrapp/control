@@ -26,12 +26,12 @@ const handlers = require('./jobs/handlers');
 //npm deps
 
 //package deps
-const { isUndefined, downloadFile, copyFile } = require('../services/common');
+const { isUndefined } = require('../services/common');
+const logger = require('../services/logger');
 
 const maxBackoff = 24 * 60 * 60;   // set max backoff for job subscriptions to 24 hours in seconds
 const killTimout = 20;             // set timeout to kill process at 20 seconds
 const startupTimout = 20;          // set timeout to start process at 20 seconds
-const installedPackagesDataFileName = './installedPackages.json';
 const maxStatusDetailLength = 64;
 
 //
@@ -227,7 +227,7 @@ function jobsAgent(jobs, args) {
         jobs.subscribeToJobs(thingName, operationName, function (err, job) {
             if (isUndefined(err)) {
                 if ((!isUndefined(args.Debug)) && (args.Debug === true)) {
-                    console.log('job execution handler invoked:', { thingName: thingName, operationName: operationName });
+                    logger.verbose('Job execution handler invoked', { thingName: thingName, operationName: operationName });
                 }
                 handler(job);
                 backoff = 1;   // reset backoff upon successful job receipt
@@ -248,16 +248,19 @@ function jobsAgent(jobs, args) {
     subscribeToJobsWithRetryOnError(args.thingName, 'systemUpdate', handlers.systemUpdate);
 
     subscribeToJobsWithRetryOnError(args.thingName, 'packageInstall', handlers.packageInstall);
+    subscribeToJobsWithRetryOnError(args.thingName, 'packageUninstall', handlers.packageUninstall);
+    subscribeToJobsWithRetryOnError(args.thingName, 'packageUpdate', handlers.packageUpdate);
     subscribeToJobsWithRetryOnError(args.thingName, 'packageStop', handlers.packageStop);
     subscribeToJobsWithRetryOnError(args.thingName, 'packageStart', handlers.packageStart);
     subscribeToJobsWithRetryOnError(args.thingName, 'packageRestart', handlers.packageRestart);
 
     jobs.startJobNotifications(args.thingName, function (err) {
         if (isUndefined(err)) {
-            console.log('startJobNotifications completed for thing: ' + args.thingName);
+            logger.verbose('Started the job notification handler for %s', args.thingName);
         }
         else {
-            console.error(err);
+            logger.error('There has been an error starting the job notification handler');
+            logger.error(err);
         }
     });
 }
@@ -265,13 +268,14 @@ function jobsAgent(jobs, args) {
 module.exports.init = async ({ iot, auth }) => {
     jobsAgent(iot, { thingName: auth.client, Debug: true });
 
-    console.log('<<', 'autostart installed packages');
+    logger.verbose('Autostart installed packages');
     await handlers.autostart()
         .then(() => {
-            console.log('>>', 'autostart complete');
+            logger.verbose('Autostart completed');
         })
         .catch(err => {
-            console.error('There has been an error autostarting installed packages', err);
+            logger.error('There has been an error autostarting installed packages');
+            logger.error(err);
         });
 };
 module.exports.installedPackages = installedPackages;

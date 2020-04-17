@@ -1,6 +1,7 @@
 const _ = require('lodash');
 
 const emitter = require('../services/emitter');
+const logger = require('../services/logger');
 
 let shadowUpdate;
 
@@ -28,19 +29,20 @@ const services = {
     package: {
         started: (package) => {
             let { id, pid, ts } = package;
-            console.log('package', id, 'has started with PID', pid);
+            logger.verbose('package %s has started with PID %d', id, pid);
             let state = _.set({}, `state.reported._runtime[${id}]`, { pid, ts });
             shadowUpdate(state);
         },
         stopped: (package) => {
             let { id } = package;
-            console.log('package', id, 'has stopped');
+            logger.verbose('package %s has stopped', id);
             let state = _.set({}, `state.reported._runtime[${id}]`, null);
             shadowUpdate(state);
         },
         startFailed: (packages) => {
             packages.forEach(package => {
-                console.log('package', package.id, 'has failed to autostart with the following error', package.err);
+                logger.error('package %s has failed to autostart', id);
+                logger.errro(package.err);
             });
         }
     }
@@ -75,7 +77,7 @@ function messageRouter(type, payload) {
 
     let fn = _.get(controllers, `${type}.${topic}`, null);
 
-    if (fn === null) return console.error(`Unsupported ${type} function call`, topic);
+    if (fn === null) return logger.error('Unsupported %s function call %d', type, topic);
 
     fn({ message: attributes });
 }
@@ -115,7 +117,7 @@ module.exports = ({iot, auth}) => {
     
     let events = {
         onConnect: async () => {
-            console.log('<<', 'connected');
+            logger.info('Connected');
             iot.subscribe(initChannels);
             
             // ready to go, start the dependencies
@@ -127,18 +129,20 @@ module.exports = ({iot, auth}) => {
             await tunnel.init({ channel: channel.internal.tunnel });
         },
         onClose: () => {
-            console.log('<<', 'closed');
+            logger.info('Closed');
         },
         onReconnect: () => {
-            console.log('<<', 'reconnect');
+            logger.info('Reconnect');
         },
         onOffline: () => {
-            console.log('<<', 'offline');
+            logger.info('Offline');
         },
         onError: (err) => {
+            logger.error(err);
             throw new Error(err);
         },
         onMessage: (topic, payload) => {
+            logger.verbose('Received MQTT message on topic %s', topic);
             emitter.emit(`iot::${topic}`, JSON.parse(payload.toString()));
         }
     };

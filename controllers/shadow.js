@@ -3,6 +3,7 @@ const _ = require('lodash');
 const emitter = require('../services/emitter');
 const shell = require('../services/shell');
 const common = require('../services/common');
+const logger = require('../services/logger');
 
 const storage = require('./jobs/storage');
 
@@ -23,6 +24,7 @@ function get({iot, client}) {
 }
 
 function update({ iot, client, data }) {
+    logger.verbose('Updating thing shadow');
     return iot.publish(`$aws/things/${client}/shadow/update`, JSON.stringify(data));
 }
 
@@ -90,9 +92,10 @@ module.exports.init = async ({iot, auth}) => {
     /*emitter.on('package::started', data => onPackageStart({ iot, client: auth.client, data }));
     emitter.on('package::stopped', data => onPackageStop({ iot, client: auth.client, data }));*/
 
+    logger.verbose('Shadow service ready');
+
     return {
         update: (data) => {
-            console.log('<< shadow.update', data);
             return update({ iot, client: auth.client, data });
         }
     };

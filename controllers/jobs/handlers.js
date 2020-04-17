@@ -8,8 +8,9 @@ const path = require('path');
 const _ = require('lodash');
 
 const storage = require('./storage');
-const { isUndefined, downloadFile, copyFile } = require('../../services/common');
+const { isUndefined } = require('../../services/common');
 const emitter = require('../../services/emitter');
+const logger = require('../../services/logger');
 
 const maxStatusDetailLength = 64;
 
@@ -75,7 +76,7 @@ function promisifyJobActions(job) {
 // Private function to start a package
 //
 async function startPackage(package) {
-    console.log('<<', 'startPackage', package);
+    logger.info('Starting package %s', package);
 
     // is the package installed?
     let installation = storage.packages.get(package);
@@ -92,7 +93,7 @@ async function startPackage(package) {
     return new Promise((resolve, reject) => {
         let runtime = {};
 
-        console.log('>> spawn', installation.sys.run[0], installation.sys.run[1]);
+        logger.verbose('Spawning %s %s', installation.sys.run[0], installation.sys.run[1]);
         runtime.process = child_process.spawn(installation.sys.run[0], installation.sys.run[1] || [], {
             cwd: installation.sys.dir,
             env: {
@@ -103,6 +104,7 @@ async function startPackage(package) {
             },
             uid: Number(installation.sys.user[1])
         }).on('close', () => {
+            logger.verbose('Stopped %s %s', installation.sys.run[0], installation.sys.run[1]);
             storage.runtime.remove(package);
         }).on('error', (err) => {
             reject(err);
@@ -126,146 +128,9 @@ async function startPackage(package) {
 async function stopPackage(package) {
     // is the package already running?
     let running = storage.runtime.get(package);
-    if (!running) {
-        // try to find the process
-        throw Error(`Can't find running process`); // TODO
-    }
+    if (!running) return; // silent skip
 
     running.kill();
-}
-
-//
-// Private function to install a package
-//
-/*{
-    "operation": "install",
-    "package": {
-        "name": "",
-        "id": "",
-        "version": "1.0.1",
-        "install": "git clone blabla",
-        "start": ["npm", ["start"]],
-        "download": [
-            [ "https://some-bucket.s3.amazonaws.com/jobs-example.js", "SHA256:9569257356cfc5c7b2b849e5f58b5d287f183e08627743498d9bd52801a2fbe4" ]
-        ]
-    },
-    "hooks": {
-        "pre": "",
-        "post": "npm install"
-    },
-    "autostart": true
-}*/
-async function installPackage(job) {
-    const {
-        package,
-        hooks,
-        autostart
-    } = job.document;
-
-    // is the job in the expected state?
-    if (job.status.status !== 'QUEUED') return job.failed({ operation: job.operation, errorCode: 'ERR_UNEXPECTED', errorMessage: 'job in unexpected state' });
-
-    // is the job manifest valid?
-    if (
-        !package ||
-        !package.id ||
-        !package.install ||
-        !package.start
-    ) return job.failed({ operation: job.operation, errorCode: 'ERR_INVALID_MANIFEST', errorMessage: 'job has invalid manifest' });
-
-    // is this package already installed?
-    if (storage.packages.get(package.id)) return job.failed({ operation: job.operation, errorCode: 'ERR_PACKAGE_ALREADY_INSTALLED', errorMessage: 'selected package already installed' });
-
-    // set directory (it will be created later)
-    const packageDirectory = path.resolve(`./../packages/pck_${package.id}`);
-    const packageUser = [`lazr_pck_${package.id}`, null];
-
-    // basic validation passed, let's run the thing
-    installPackage().then(() => {
-        // install completed
-        storage.packages.set(package.id, {
-            name: package.name,
-            autostart: autostart,
-            version: package.version,
-            sys: {
-                user: packageUser,
-                dir: packageDirectory,
-                run: package.start
-            },
-            installed: +new Date,
-            manifest: job.document
-        });
-        job.succeeded({ operation: job.operation, state: 'package installation completed' });
-    }).catch(async err => {
-        console.error(err);
-        // install failed... cleanup the mess we created, deletes folders, and fails the job with an error
-        await exec(`sudo rm -r ${packageDirectory}`).catch(err => { });
-        await exec(`sudo userdel ${packageUser[0]}`).catch(err => { });
-        job.failed({ operation: job.operation, errorCode: "ERR_PACKAGE_INSTALL_FAILED", errorMessage: errorToString(err) });
-    });
-
-    async function installPackage() {
-        await job.inProgress({ operation: job.operation, step: 'installing package' });
-
-        // create system user for package, create package directory
-        await exec(`sudo useradd -M ${packageUser[0]} && sudo usermod -L ${packageUser[0]}`);
-        await exec(`sudo mkdir ${packageDirectory}`);
-
-        // store user UID
-        packageUser[1] = await exec(`sudo id -u ${packageUser[0]}`).then(({ stdout }) => stdout.replace(/(\r\n\t|\n|\r\t)/gm, "").parseInt());
-
-        // do we have to download any files?
-        if (package.download && package.download.length > 0) {
-            await job.inProgress({ operation: job.operation, step: 'downloading files' });
-            let downloaded = [];
-            package.download.forEach(async file => {
-                // is file[0] in the right format?
-                let url;
-                try {
-                    url = require('url').parse(file[0]);
-                } catch (err) {
-                    new Error(`URL ${file[0]} is invalid`);
-                }
-
-                // download file
-                await exec(`cd ${packageDirectory} && { sudo curl -O ${url.toString()} }`);
-
-                // checksum
-                return; // TODO
-                try {
-                    if (!file[1]) return;
-                    validateChecksum('', file[1].split(':'));
-                } catch (err) {
-                    new Error(`URL ${file[0]} failed checksum`);
-                }
-            });
-        }
-
-        // make sure the package directory and its contents are chowned by the package user
-        await exec(`sudo chown -R ${packageUser[0]} ${packageDirectory}`);
-
-        // run preinstall hooks if any
-        if (hooks && hooks.pre) {
-            await job.inProgress({ operation: job.operation, step: 'running pre-install hook' });
-            await exec(`${hooks.pre}`);
-        }
-
-        // run install hook if any
-        if (package.install) {
-            await job.inProgress({ operation: job.operation, step: 'running package install' });
-            await exec(`${package.install}`);
-        }
-
-        // start package
-        await job.inProgress({ operation: job.operation, step: 'starting package' });
-        await startPackage(package.id);
-
-        // run postinstall hooks if any
-        if (hooks && hooks.post) {
-            await job.inProgress({ operation: job.operation, step: 'running post-install hook' });
-            await exec(`${hooks.post}`);
-        }
-    }
 }
 
 //
@@ -289,7 +154,8 @@ async function autostartPackages() {
             if (failed.length > 0) return emitter.emit(`package::startFailed`, failed);
         })
         .catch(err => {
-            console.error(err);
+            logger.error('There has been an error autostarting packages');
+            logger.error(err);
         });
 
     return true;
@@ -298,21 +164,24 @@ async function autostartPackages() {
 async function shutdownSystem(delay) {
     // User account running node.js agent must have passwordless sudo access on /sbin/shutdown
     // Recommended online search for permissions setup instructions https://www.google.com/search?q=passwordless+sudo+access+instructions
+    logger.info('System shutdown requested');
     return exec('sudo /sbin/shutdown +' + delay);
 }
 
 async function rebootSystem(delay) {
     // User account running node.js agent must have passwordless sudo access on /sbin/shutdown
     // Recommended online search for permissions setup instructions https://www.google.com/search?q=passwordless+sudo+access+instructions
+    logger.info('System reboot requested');
     return exec('sudo /sbin/shutdown -r +' + delay);
 }
 
 async function updateSystem() {
-    console.log("<<", "updating control plane base");
+    logger.info('System update requested');
+    logger.verbose('Updating control plane base');
     await exec(`git fetch origin && git reset --hard origin/master`, { cwd: process.cwd() });
-    console.log("<<", "updating control plane dependencies");
+    logger.verbose('Updating control plane dependencies');
     await exec(`npm install`, { cwd: process.cwd() });
-    console.log("<<", "shutting down");
+    logger.info('System update completed, ending process (should be restarted by systemd)');
     process.exit(0);
 }
 
@@ -404,10 +273,268 @@ module.exports.systemUpdate = async (job) => {
     },
     "autostart": true
 }*/
+async function installPackage({ job, updating, progress }) {
+    const {
+        package,
+        hooks,
+        autostart
+    } = job.document;
+
+    // is the job in the expected state?
+    if (job.status.status !== 'QUEUED') return job.failed({ operation: job.operation, errorCode: 'ERR_UNEXPECTED', errorMessage: 'job in unexpected state' });
+
+    // is the job manifest valid?
+    if (
+        !package ||
+        !package.id ||
+        !package.install ||
+        !package.start
+    ) return job.failed({ operation: job.operation, errorCode: 'ERR_INVALID_MANIFEST', errorMessage: 'job has invalid manifest' });
+
+    // is this package already installed?
+    if (storage.packages.get(package.id)) return job.failed({ operation: job.operation, errorCode: 'ERR_PACKAGE_ALREADY_INSTALLED', errorMessage: 'selected package already installed' });
+
+    // set directory (it will be created later)
+    const packageDirectory = path.resolve(`./../packages/pck_${package.id}`);
+    const packageUser = [`lazr_pck_${package.id}`, null];
+
+    logger.info('Installing package %s as %s to %s', package.id, packageUser[0], packageDirectory);
+
+    // basic validation passed, let's run the thing
+    installPackage().then(() => {
+        // install completed
+        storage.packages.set(package.id, {
+            name: package.name,
+            autostart: autostart,
+            version: package.version,
+            sys: {
+                user: packageUser,
+                dir: packageDirectory,
+                run: package.start
+            },
+            installed: +new Date,
+            manifest: job.document
+        });
+        job.succeeded({ operation: job.operation, state: 'package installation completed' });
+    }).catch(async err => {
+        logger.error('There has been an error installing the package %s', package.id);
+        logger.error(err);
+        // install failed... cleanup the mess we created, deletes folders, and fails the job with an error
+        await exec(`sudo rm -r ${packageDirectory}`).catch(err => { });
+        await exec(`sudo userdel ${packageUser[0]}`).catch(err => { });
+        job.failed({ operation: job.operation, errorCode: "ERR_PACKAGE_INSTALL_FAILED", errorMessage: errorToString(err) });
+    });
+
+    async function installPackage() {
+        await progress('installing package');
+
+        // create system user for package, create package directory
+        await exec(`sudo useradd -M ${packageUser[0]} && sudo usermod -L ${packageUser[0]}`);
+        await exec(`sudo mkdir ${packageDirectory}`);
+
+        // store user UID
+        packageUser[1] = await exec(`sudo id -u ${packageUser[0]}`).then(({ stdout }) => stdout.replace(/(\r\n\t|\n|\r\t)/gm, "").parseInt());
+
+        logger.verbose('Created user %s (%s) and directory %s', packageUser[0], packageUser[1], packageDirectory);
+
+        // do we have to download any files?
+        if (package.download && package.download.length > 0) {
+            await progress('downloading files');
+            let downloaded = [];
+            package.download.forEach(async file => {
+                // is file[0] in the right format?
+                let url;
+                try {
+                    url = require('url').parse(file[0]);
+                } catch (err) {
+                    new Error(`URL ${file[0]} is invalid`);
+                }
+
+                // download file
+                logger.verbose('Downloading %s to %s', url.toString(), packageDirectory);
+                await exec(`cd ${packageDirectory} && { sudo curl -O ${url.toString()} }`);
+
+                // checksum
+                return; // TODO
+                try {
+                    if (!file[1]) return;
+                    validateChecksum('', file[1].split(':'));
+                } catch (err) {
+                    new Error(`URL ${file[0]} failed checksum`);
+                }
+            });
+        }
+
+        // make sure the package directory and its contents are chowned by the package user
+        await exec(`sudo chown -R ${packageUser[0]} ${packageDirectory}`);
+
+        // run preinstall hooks if any
+        if (hooks && hooks.pre) {
+            logger.verbose('Running preinstall hook');
+            await progress('running pre-install hook');
+            await exec(`${hooks.pre}`, {
+                cwd: packageDirectory,
+                uid: Number(packageUser[1])
+            });
+        }
+
+        // run install hook if any
+        if (package.install) {
+            logger.verbose('Running install hook');
+            await progress('running package install');
+            await exec(`${package.install}`, {
+                cwd: packageDirectory,
+                uid: Number(packageUser[1])
+            });
+        }
+
+        // start package
+        await progress('starting package');
+        await startPackage(package.id);
+
+        // run postinstall hooks if any
+        if (hooks && hooks.post) {
+            logger.verbose('Running postinstall hook');
+            await progress('running post-install hook');
+            await exec(`${hooks.post}`, {
+                cwd: packageDirectory,
+                uid: Number(packageUser[1])
+            });
+        }
+    }
+}
+
 module.exports.packageInstall = (job) => {
     job = promisifyJobActions(job);
 
-    installPackage(job);
+    let progressUpdate = async (step) => {
+        return job.inProgress({ operation: job.operation, step: step });
+    };
+
+    installPackage({ job, progress: progressUpdate }).then(() => {
+
+    }).catch(err => {
+
+    });
+};
+
+//
+// Private function to handle uninstall of packages
+//
+/*{
+    "operation": "packageUninstall",
+    "package": {
+        "id": ""
+    },
+    "hooks": {
+        "pre": "",
+        "post": "npm install"
+    }
+}*/
+async function uninstallPackage(job) {
+    const {
+        package,
+        hooks
+    } = job.document;
+
+    // is the job manifest valid?
+    if (
+        !package ||
+        !package.id
+    ) throw Error('ERR_INVALID_MANIFEST');
+
+    // is this package already installed?
+    let installation = storage.packages.get(package.id);
+    if (!installation) throw Error('ERR_PACKAGE_NOT_INSTALLED');
+
+    // run pre uninstall hook if any
+    if (hooks && hooks.pre) {
+        await exec(hooks.pre, {
+            cwd: installation.sys.dir,
+            uid: Number(installation.sys.user[0])
+        });
+    }
+
+    // stop the package
+    await stopPackage(package.id);
+
+    // run post uninstall hook if any
+    if (hooks && hooks.post) {
+        await exec(hooks.post, {
+            cwd: installation.sys.dir,
+            uid: Number(installation.sys.user[0])
+        });
+    }
+
+    // remove the directory
+    await exec(`sudo rm -r ${installation.sys.dir}`).catch(err => { /*silent error*/ });
+
+    // remove the user
+    await exec(`sudo userdel ${installation.sys.user[0]}`).catch(err => { /*silent error*/ });
+
+    // remove entry from package storage
+    storage.packages.remove(package.id);
+}
+module.exports.packageUninstall = (job) => {
+    job = promisifyJobActions(job);
+
+    // is the job in the expected state?
+    if (job.status.status !== 'QUEUED') return job.failed({ operation: job.operation, errorCode: 'ERR_UNEXPECTED', errorMessage: 'job in unexpected state' });
+
+    job.inProgress({ operation: job.operation, step: 'initiated' });
+
+    uninstallPackage(job).then(() => {
+        job.succeeded({ operation: job.operation, step: 'uninstalled package' });
+    }).catch(err => {
+        job.failed({
+            operation: job.operation, errorCode: 'ERR_PACKAGE_UNINSTALL_FAILED', errorMessage: 'unable to uninstall package',
+            error: errorToString(err)
+        });
+    });
+};
+
+//
+// Private function to handle updating of packages
+//
+/* manifest is the same as in install, the operation name is "packageUpdate" */
+async function updatePackage(job) {
+    const {
+        package,
+        hooks
+    } = job.document;
+
+    // is this package already installed?
+    let installation = storage.packages.get(package.id);
+    if (!installation) throw Error('ERR_PACKAGE_NOT_INSTALLED');
+
+    // stop package
+
+    // rename package directory
+
+    // install package
+
+    // start package
+
+    // remove failover directory
+
+    // if the process fails
+        // cleanup the new directory
+        // restore from failover
+        // start package
+}
+module.exports.packageUpdate = (job) => {
+    job = promisifyJobActions(job);
+
+    job.inProgress({ operation: job.operation, step: 'initiated' });
+
+    updatePackage(job).then(() => {
+        job.succeeded({ operation: job.operation, step: 'updated package' });
+    }).catch(err => {
+        job.failed({
+            operation: job.operation, errorCode: 'ERR_PACKAGE_UPDATE_FAILED', errorMessage: 'unable to update package',
+            error: errorToString(err)
+        });
+    });
 };
 
 module.exports.packageRestart = async (job) => {
@@ -422,7 +549,8 @@ module.exports.packageRestart = async (job) => {
         })
         .catch(err => {
             // silent error
-            console.error('expected to stop package, but was unable', err);
+            logger.error('Expected to stop package, but was unable');
+            logger.error(err);
         });
     
     //start package
