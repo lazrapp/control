@@ -102,13 +102,17 @@ async function startPackage(package) {
                     installed: installation.installed
                 }
             },
-            uid: Number(installation.sys.user[1])
-        }).on('close', () => {
-            logger.verbose('Stopped %s %s', installation.sys.run[0], installation.sys.run[1]);
+            uid: Number(installation.sys.user[1]),
+            gid: Number(installation.sys.user[1])
+        }).on('close', (code) => {
+            logger.verbose('Process %s %s exited with code %s', installation.sys.run[0], installation.sys.run[1], code);
             storage.runtime.remove(package);
         }).on('error', (err) => {
             reject(err);
         });
+
+        runtime.process.stdout.on('data', data => logger.verbose('Process %s stdout %s', installation.sys.run[0], data));
+        runtime.process.stderr.on('data', data => logger.error('Process %s stderr %s', installation.sys.run[0], data));
 
         runtime.kill = () => {
             runtime.process.kill();
@@ -162,17 +166,13 @@ async function autostartPackages() {
 }
 
 async function shutdownSystem(delay) {
-    // User account running node.js agent must have passwordless sudo access on /sbin/shutdown
-    // Recommended online search for permissions setup instructions https://www.google.com/search?q=passwordless+sudo+access+instructions
     logger.info('System shutdown requested');
-    return exec('sudo /sbin/shutdown +' + delay);
+    return exec('/sbin/shutdown +' + delay);
 }
 
 async function rebootSystem(delay) {
-    // User account running node.js agent must have passwordless sudo access on /sbin/shutdown
-    // Recommended online search for permissions setup instructions https://www.google.com/search?q=passwordless+sudo+access+instructions
     logger.info('System reboot requested');
-    return exec('sudo /sbin/shutdown -r +' + delay);
+    return exec('/sbin/shutdown -r +' + delay);
 }
 
 async function updateSystem() {
@@ -199,7 +199,7 @@ module.exports.systemShutdown = async (job) => {
         job.succeeded({ operation: job.operation, step: 'initiated' });
     }).catch(err => {
         job.failed({
-            operation: job.operation, errorCode: 'ERR_SYSTEM_CALL_FAILED', errorMessage: 'unable to execute shutdown, check passwordless sudo permissions on agent',
+            operation: job.operation, errorCode: 'ERR_SYSTEM_CALL_FAILED', errorMessage: 'unable to execute shutdown, you sure the control plane is running as root?',
             error: errorToString(err)
         });
     });
@@ -220,12 +220,10 @@ module.exports.systemReboot = async (job) => {
     
     await setProgress({ operation: job.operation, step: 'initiated' });
     let delay = (isUndefined(job.document.delay) ? '0' : job.document.delay.toString());
-
-    // User account running node.js agent must have passwordless sudo access on /sbin/shutdown
-    // Recommended online search for permissions setup instructions https://www.google.com/search?q=passwordless+sudo+access+instructions
+    
     await rebootSystem(delay).catch(err => {
         job.failed({
-            operation: job.operation, errorCode: 'ERR_SYSTEM_CALL_FAILED', errorMessage: 'unable to execute reboot, check passwordless sudo permissions on agent',
+            operation: job.operation, errorCode: 'ERR_SYSTEM_CALL_FAILED', errorMessage: 'unable to execute reboot, you sure control plane is running as root?',
             error: errorToString(err)
         });
     });
@@ -265,18 +263,17 @@ module.exports.systemUpdate = async (job) => {
         "start": ["npm", ["start"]],
         "download": [
             [ "https://some-bucket.s3.amazonaws.com/jobs-example.js", "SHA256:9569257356cfc5c7b2b849e5f58b5d287f183e08627743498d9bd52801a2fbe4" ]
-        ]
-    },
-    "hooks": {
-        "pre": "",
-        "post": "npm install"
+        ],
+        "hooks": {
+            "pre": "",
+            "post": "npm install"
+        }
     },
     "autostart": true
 }*/
 async function installPackage({ job, updating, progress }) {
     const {
         package,
-        hooks,
         autostart
     } = job.document;
 
@@ -301,8 +298,9 @@ async function installPackage({ job, updating, progress }) {
     logger.info('Installing package %s as %s to %s', package.id, packageUser[0], packageDirectory);
 
     // basic validation passed, let's run the thing
-    installPackage().then(() => {
+    return installPackage().then(async () => {
         // install completed
+        logger.info('Package %s successfully installed', package.id);
         storage.packages.set(package.id, {
             name: package.name,
             autostart: autostart,
@@ -316,12 +314,17 @@ async function installPackage({ job, updating, progress }) {
             manifest: job.document
         });
         job.succeeded({ operation: job.operation, state: 'package installation completed' });
+
+        if (package.autostart) {
+            // start package
+            await startPackage(package.id);
+        }
     }).catch(async err => {
         logger.error('There has been an error installing the package %s', package.id);
         logger.error(err);
         // install failed... cleanup the mess we created, deletes folders, and fails the job with an error
-        await exec(`sudo rm -r ${packageDirectory}`).catch(err => { });
-        await exec(`sudo userdel ${packageUser[0]}`).catch(err => { });
+        await exec(`rm -r ${packageDirectory}`).catch(err => { });
+        await exec(`userdel -r ${packageUser[0]}`).catch(err => { });
         job.failed({ operation: job.operation, errorCode: "ERR_PACKAGE_INSTALL_FAILED", errorMessage: errorToString(err) });
     });
 
@@ -329,11 +332,11 @@ async function installPackage({ job, updating, progress }) {
         await progress('installing package');
 
         // create system user for package, create package directory
-        await exec(`sudo useradd -M ${packageUser[0]} && sudo usermod -L ${packageUser[0]}`);
-        await exec(`sudo mkdir -p ${packageDirectory}`);
+        await exec(`useradd -m ${packageUser[0]} && usermod -L ${packageUser[0]}`);
+        await exec(`mkdir -p ${packageDirectory}`);
 
         // store user UID
-        packageUser[1] = await exec(`sudo id -u ${packageUser[0]}`).then(({ stdout }) => stdout.replace(/(\r\n\t|\n|\r\t)/gm, "").parseInt());
+        packageUser[1] = await exec(`id -u ${packageUser[0]}`).then(({ stdout }) => parseInt(stdout.replace(/(\r\n\t|\n|\r\t)/gm, "")));
 
         logger.verbose('Created user %s (%s) and directory %s', packageUser[0], packageUser[1], packageDirectory);
 
@@ -352,7 +355,7 @@ async function installPackage({ job, updating, progress }) {
 
                 // download file
                 logger.verbose('Downloading %s to %s', url.toString(), packageDirectory);
-                await exec(`cd ${packageDirectory} && { sudo curl -O ${url.toString()} }`);
+                await exec(`cd ${packageDirectory} && { curl -O ${url.toString()} }`);
 
                 // checksum
                 return; // TODO
@@ -366,15 +369,16 @@ async function installPackage({ job, updating, progress }) {
         }
 
         // make sure the package directory and its contents are chowned by the package user
-        await exec(`sudo chown -R ${packageUser[0]} ${packageDirectory}`);
+        await exec(`chown -R ${packageUser[0]}:${packageUser[0]} ${packageDirectory}`);
 
         // run preinstall hooks if any
-        if (hooks && hooks.pre) {
+        if (package.hooks && package.hooks.pre) {
             logger.verbose('Running preinstall hook');
             await progress('running pre-install hook');
-            await exec(`${hooks.pre}`, {
+            await exec(`${package.hooks.pre}`, {
                 cwd: packageDirectory,
-                uid: Number(packageUser[1])
+                uid: Number(packageUser[1]),
+                gid: Number(packageUser[1])
             });
         }
 
@@ -384,21 +388,19 @@ async function installPackage({ job, updating, progress }) {
             await progress('running package install');
             await exec(`${package.install}`, {
                 cwd: packageDirectory,
-                uid: Number(packageUser[1])
+                uid: Number(packageUser[1]),
+                gid: Number(packageUser[1])
             });
         }
 
-        // start package
-        await progress('starting package');
-        await startPackage(package.id);
-
         // run postinstall hooks if any
-        if (hooks && hooks.post) {
+        if (package.hooks && package.hooks.post) {
             logger.verbose('Running postinstall hook');
             await progress('running post-install hook');
-            await exec(`${hooks.post}`, {
+            await exec(`${package.hooks.post}`, {
                 cwd: packageDirectory,
-                uid: Number(packageUser[1])
+                uid: Number(packageUser[1]),
+                gid: Number(packageUser[1])
             });
         }
     }
@@ -467,10 +469,10 @@ async function uninstallPackage(job) {
     }
 
     // remove the directory
-    await exec(`sudo rm -r ${installation.sys.dir}`).catch(err => { /*silent error*/ });
+    await exec(`rm -r ${installation.sys.dir}`).catch(err => { /*silent error*/ });
 
     // remove the user
-    await exec(`sudo userdel ${installation.sys.user[0]}`).catch(err => { /*silent error*/ });
+    await exec(`userdel -r ${installation.sys.user[0]}`).catch(err => { /*silent error*/ });
 
     // remove entry from package storage
     storage.packages.remove(package.id);
@@ -543,7 +545,7 @@ module.exports.packageRestart = async (job) => {
     job.inProgress({ operation: job.operation, step: 'initiated' });
 
     //stop package
-    await stopPackage()
+    await stopPackage(job.document.package.id)
         .then(() => {
             job.inProgress({ operation: job.operation, step: 'stopped package' });
         })
@@ -554,7 +556,7 @@ module.exports.packageRestart = async (job) => {
         });
     
     //start package
-    await startPackage()
+    await startPackage(job.document.package.id)
         .then(async () => {
             await job.succeeded({ operation: job.operation, step: 'restarted package' });
         })
@@ -572,7 +574,7 @@ module.exports.packageStop = async (job) => {
     job.inProgress({ operation: job.operation, step: 'initiated' });
 
     //stop package
-    await stopPackage()
+    await stopPackage(job.document.package.id)
         .then(() => {
             job.succeeded({ operation: job.operation, step: 'stopped package' });
         })
@@ -590,7 +592,7 @@ module.exports.packageStart = async (job) => {
     job.inProgress({ operation: job.operation, step: 'initiated' });
 
     //start package
-    await startPackage()
+    await startPackage(job.document.package.id)
         .then(() => {
             job.succeeded({ operation: job.operation, step: 'started package' });
         })
