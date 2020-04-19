@@ -295,8 +295,8 @@ async function installPackage({ job, updating, progress }) {
     if (storage.packages.get(package.id)) return job.failed({ operation: job.operation, errorCode: 'ERR_PACKAGE_ALREADY_INSTALLED', errorMessage: 'selected package already installed' });
 
     // set directory (it will be created later)
-    const packageDirectory = path.resolve(`./../packages/pck_${package.id}`);
-    const packageUser = [`lazr_pck_${package.id}`, null];
+    const packageDirectory = path.resolve(`./../packages/pck-${package.id}`);
+    const packageUser = [`lazr-pck-${package.id}`, null];
 
     logger.info('Installing package %s as %s to %s', package.id, packageUser[0], packageDirectory);
 
@@ -330,7 +330,7 @@ async function installPackage({ job, updating, progress }) {
 
         // create system user for package, create package directory
         await exec(`sudo useradd -M ${packageUser[0]} && sudo usermod -L ${packageUser[0]}`);
-        await exec(`sudo mkdir ${packageDirectory}`);
+        await exec(`sudo mkdir -p ${packageDirectory}`);
 
         // store user UID
         packageUser[1] = await exec(`sudo id -u ${packageUser[0]}`).then(({ stdout }) => stdout.replace(/(\r\n\t|\n|\r\t)/gm, "").parseInt());

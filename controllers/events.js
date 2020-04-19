@@ -97,8 +97,7 @@ module.exports = ({iot, auth}) => {
         `devices/${auth.client}`,
         `devices/$global`,
         `$aws/things/${auth.client}/shadow/delta`,
-        `$aws/things/${auth.client}/shadow/get/accepted`,
-        `$aws/things/${auth.client}/shadow/get/rejected`,
+        `$aws/things/${auth.client}/shadow/get/#`,
         `$aws/things/${auth.client}/tunnels/notify`
     ];
 
