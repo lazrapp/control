@@ -224,7 +224,7 @@ function restartPackage(job) {
 
 function jobsAgent(jobs, args) {
     function subscribeToJobsWithRetryOnError(thingName, operationName, handler, backoff) {
-        jobs.subscribeToJobs(thingName, operationName, function (err, job) {
+        jobs.subscribeToJobs(thingName, operationName, (err, job) => {
             if (isUndefined(err)) {
                 if ((!isUndefined(args.Debug)) && (args.Debug === true)) {
                     logger.verbose('Job execution handler invoked', { thingName: thingName, operationName: operationName });
@@ -236,7 +236,7 @@ function jobsAgent(jobs, args) {
                 if (isUndefined(backoff)) {
                     backoff = 1;
                 }
-                setTimeout(function () {
+                setTimeout(() => {
                     subscribeToJobsWithRetryOnError(thingName, operationName, handler, Math.min(backoff * 2, maxBackoff));
                 }, backoff * 1000);
             }
@@ -254,7 +254,7 @@ function jobsAgent(jobs, args) {
     subscribeToJobsWithRetryOnError(args.thingName, 'packageStart', handlers.packageStart);
     subscribeToJobsWithRetryOnError(args.thingName, 'packageRestart', handlers.packageRestart);
 
-    jobs.startJobNotifications(args.thingName, function (err) {
+    jobs.startJobNotifications(args.thingName, (err) => {
         if (isUndefined(err)) {
             logger.verbose('Started the job notification handler for %s', args.thingName);
         }
