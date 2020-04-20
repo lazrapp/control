@@ -1,6 +1,7 @@
 const _ = require('lodash');
 
 const emitter = require('../services/emitter');
+const ipc = require('../services/ipc');
 const logger = require('../services/logger');
 
 let shadowUpdate;
@@ -44,6 +45,26 @@ const services = {
                 logger.error('package %s has failed to autostart', id);
                 logger.errro(package.err);
             });
+        },
+        message: {
+            received: {
+                iot: ({package, message}) => {
+                    logger.verbose('Received message for package %s', package);
+                    if (package) ipc.emit('mqtt', package, message);
+                },
+                ipc: ({type, package, message}) => {
+                    switch (type) {
+                        case "state":
+                            // update shadow
+                            shadowUpdate(_.set({}, `state.reported._package[${package}]`, message));
+                            break;
+                        default:
+                            // send mqtt
+                            emitter.emit(`iot::package/message`, {type, package, message});
+                            //iot.publish(`$aws/rules/PackageMessage/${type}`, JSON.stringify(message));
+                    }
+                }
+            }
         }
     }
 };
@@ -88,6 +109,15 @@ function internalMessageRouter(topic, payload) {
     if (fn) fn(payload);
 }
 
+function packageMessageRouter(payload) {
+    services.package.message.received.iot(payload);
+}
+
+function ipcMessageRouter(type, package, message) {
+    console.log('<<', { type, package, message });
+    services.package.message.received.ipc({ type, package, message });
+}
+
 module.exports = ({iot, auth}) => {
     let shadow = require('./shadow');
     let jobs = require('./jobs');
@@ -95,6 +125,7 @@ module.exports = ({iot, auth}) => {
 
     let initChannels = [
         `devices/${auth.client}`,
+        `devices/${auth.client}/packages`,
         `devices/$global`,
         `$aws/things/${auth.client}/shadow/delta`,
         `$aws/things/${auth.client}/shadow/get/#`,
@@ -104,8 +135,14 @@ module.exports = ({iot, auth}) => {
     let channel = {
         iot: {
             private: initChannels[0],
-            global: initChannels[1],
-            tunnel: initChannels[5]
+            global: initChannels[2],
+            tunnel: initChannels[6]
+        },
+        ipc: {
+            state: `ipc::state`
+        },
+        map: {
+            "iot::package/message": "$aws/rules/PackageMessage"
         },
         internal: {}
     };
@@ -157,6 +194,7 @@ module.exports = ({iot, auth}) => {
 
     // message routing
     emitter.on(channel.internal.private, (payload) => messageRouter("private", payload));
+    emitter.on(`${channel.internal.private}/packages`, (payload) => packageMessageRouter(payload));
     emitter.on(channel.internal.global, (payload) => messageRouter("global", payload));
 
     // internal message routing
@@ -164,8 +202,14 @@ module.exports = ({iot, auth}) => {
     emitter.on('package::stopped', (payload) => internalMessageRouter('package::stopped', payload));
     emitter.on('package::startFailed', (payload) => internalMessageRouter('package::startFailed', payload));
 
+    // ipc message routing
+    emitter.on(channel.ipc.state, (payload) => ipcMessageRouter('state', payload.package, payload.state));
+
     // message emitter
-    emitter.on('publish::iot', ({ topic, msg }) => {
-        iot.publish(`${channel.iot.private}/${topic}`, JSON.stringify(msg || {}));
+    emitter.on(`iot::package/message`, ({ type, package, message }) => {
+        iot.publish(`${channel.map[`iot::package/message`]}/${type}/${package}`, JSON.stringify(message || {}));
     });
+    /*emitter.on('publish::iot', ({ topic, msg }) => {
+        iot.publish(`${channel.iot.private}/${topic}`, JSON.stringify(msg || {}));
+    });*/
 };
