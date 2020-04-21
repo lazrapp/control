@@ -73,6 +73,20 @@ function promisifyJobActions(job) {
 }
 
 //
+// Private function to exec stuff in the shell
+//
+async function runExec({ command, uid, cwd }) {
+    let args = {
+        cwd: cwd || process.cwd()
+    };
+    if (uid) {
+        args['uid'] = uid;
+        args['gid'] = uid;
+    }
+    return exec(command, args);
+}
+
+//
 // Private function to start a package
 //
 async function startPackage(package) {
@@ -167,20 +181,28 @@ async function autostartPackages() {
 
 async function shutdownSystem(delay) {
     logger.info('System shutdown requested');
-    return exec('/sbin/shutdown +' + delay);
+    return runExec({
+        command: '/sbin/shutdown +' + delay
+    });
 }
 
 async function rebootSystem(delay) {
     logger.info('System reboot requested');
-    return exec('/sbin/shutdown -r +' + delay);
+    return runExec({
+        command: '/sbin/shutdown -r +' + delay
+    });
 }
 
 async function updateSystem() {
     logger.info('System update requested');
     logger.verbose('Updating control plane base');
-    await exec(`git fetch origin && git reset --hard origin/master`, { cwd: process.cwd() });
+    await runExec({
+        command: `git fetch origin && git reset --hard origin/master`
+    });
     logger.verbose('Updating control plane dependencies');
-    await exec(`npm install`, { cwd: process.cwd() });
+    await runExec({
+        command: `npm install`
+    });
     logger.info('System update completed, ending process (should be restarted by systemd)');
     process.exit(0);
 }
@@ -323,8 +345,13 @@ async function installPackage({ job, updating, progress }) {
         logger.error('There has been an error installing the package %s', package.id);
         logger.error(err);
         // install failed... cleanup the mess we created, deletes folders, and fails the job with an error
-        await exec(`rm -r ${packageDirectory}`).catch(err => { });
-        await exec(`userdel -r ${packageUser[0]}`).catch(err => { });
+
+        await runExec({
+            command: `rm -r ${packageDirectory}`
+        }).catch(err => { });
+        await runExec({
+            command: `userdel -r ${packageUser[0]}`
+        }).catch(err => { });
         job.failed({ operation: job.operation, errorCode: "ERR_PACKAGE_INSTALL_FAILED", errorMessage: errorToString(err) });
     });
 
@@ -332,11 +359,17 @@ async function installPackage({ job, updating, progress }) {
         await progress('installing package');
 
         // create system user for package, create package directory
-        await exec(`useradd -m ${packageUser[0]} && usermod -L ${packageUser[0]}`);
-        await exec(`mkdir -p ${packageDirectory}`);
+        await runExec({
+            command: `useradd -m ${packageUser[0]} && usermod -L ${packageUser[0]}`
+        });
+        await runExec({
+            command: `mkdir -p ${packageDirectory}`
+        });
 
         // store user UID
-        packageUser[1] = await exec(`id -u ${packageUser[0]}`).then(({ stdout }) => parseInt(stdout.replace(/(\r\n\t|\n|\r\t)/gm, "")));
+        packageUser[1] = await runExec({
+            command: `id -u ${packageUser[0]}`
+        }).then(({ stdout }) => parseInt(stdout.replace(/(\r\n\t|\n|\r\t)/gm, "")));
 
         logger.verbose('Created user %s (%s) and directory %s', packageUser[0], packageUser[1], packageDirectory);
 
@@ -355,7 +388,9 @@ async function installPackage({ job, updating, progress }) {
 
                 // download file
                 logger.verbose('Downloading %s to %s', url.toString(), packageDirectory);
-                await exec(`cd ${packageDirectory} && { curl -O ${url.toString()} }`);
+                await runExec({
+                    command: `cd ${packageDirectory} && { curl -O ${url.toString()} }`
+                });
 
                 // checksum
                 return; // TODO
@@ -369,16 +404,18 @@ async function installPackage({ job, updating, progress }) {
         }
 
         // make sure the package directory and its contents are chowned by the package user
-        await exec(`chown -R ${packageUser[0]}:${packageUser[0]} ${packageDirectory}`);
+        await runExec({
+            command: `chown -R ${packageUser[0]}:${packageUser[0]} ${packageDirectory}`
+        });
 
         // run preinstall hooks if any
         if (package.hooks && package.hooks.pre) {
             logger.verbose('Running preinstall hook');
             await progress('running pre-install hook');
-            await exec(`${package.hooks.pre}`, {
+            await runExec({
+                command: package.hooks.pre,
                 cwd: packageDirectory,
-                uid: Number(packageUser[1]),
-                gid: Number(packageUser[1])
+                uid: Number(packageUser[1])
             });
         }
 
@@ -386,10 +423,10 @@ async function installPackage({ job, updating, progress }) {
         if (package.install) {
             logger.verbose('Running install hook');
             await progress('running package install');
-            await exec(`${package.install}`, {
+            await runExec({
+                command: package.install,
                 cwd: packageDirectory,
-                uid: Number(packageUser[1]),
-                gid: Number(packageUser[1])
+                uid: Number(packageUser[1])
             });
         }
 
@@ -397,10 +434,10 @@ async function installPackage({ job, updating, progress }) {
         if (package.hooks && package.hooks.post) {
             logger.verbose('Running postinstall hook');
             await progress('running post-install hook');
-            await exec(`${package.hooks.post}`, {
+            await runExec({
+                command: package.hooks.post,
                 cwd: packageDirectory,
-                uid: Number(packageUser[1]),
-                gid: Number(packageUser[1])
+                uid: Number(packageUser[1])
             });
         }
     }
@@ -451,7 +488,8 @@ async function uninstallPackage(job) {
 
     // run pre uninstall hook if any
     if (hooks && hooks.pre) {
-        await exec(hooks.pre, {
+        await runExec({
+            command: hooks.pre,
             cwd: installation.sys.dir,
             uid: Number(installation.sys.user[0])
         });
@@ -462,17 +500,22 @@ async function uninstallPackage(job) {
 
     // run post uninstall hook if any
     if (hooks && hooks.post) {
-        await exec(hooks.post, {
+        await runExec({
+            command: hooks.post,
             cwd: installation.sys.dir,
             uid: Number(installation.sys.user[0])
         });
     }
 
     // remove the directory
-    await exec(`rm -r ${installation.sys.dir}`).catch(err => { /*silent error*/ });
+    await runExec({
+        command: `rm -r ${installation.sys.dir}`
+    }).catch(err => { /*silent error*/ });
 
     // remove the user
-    await exec(`userdel -r ${installation.sys.user[0]}`).catch(err => { /*silent error*/ });
+    await runExec({
+        command: `userdel -r ${installation.sys.user[0]}`
+    }).catch(err => { /*silent error*/ });
 
     // remove entry from package storage
     storage.packages.remove(package.id);
