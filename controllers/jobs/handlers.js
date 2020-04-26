@@ -296,7 +296,8 @@ module.exports.systemUpdate = async (job) => {
 async function installPackage({ job, updating, progress }) {
     const {
         package,
-        autostart
+        autostart,
+        priviledged
     } = job.document;
 
     // is the job in the expected state?
@@ -412,33 +413,51 @@ async function installPackage({ job, updating, progress }) {
         if (package.hooks && package.hooks.pre) {
             logger.verbose('Running preinstall hook');
             await progress('running pre-install hook');
-            await runExec({
-                command: package.hooks.pre,
-                cwd: packageDirectory,
-                uid: Number(packageUser[1])
-            });
+            if (priviledged) {
+                await runExec({
+                    command: package.hooks.pre
+                });
+            } else {
+                await runExec({
+                    command: package.hooks.pre,
+                    cwd: packageDirectory,
+                    uid: Number(packageUser[1])
+                });
+            }
         }
 
         // run install hook if any
         if (package.install) {
             logger.verbose('Running install hook');
             await progress('running package install');
-            await runExec({
-                command: package.install,
-                cwd: packageDirectory,
-                uid: Number(packageUser[1])
-            });
+            if (priviledged) {
+                await runExec({
+                    command: package.install
+                });
+            } else {
+                await runExec({
+                    command: package.install,
+                    cwd: packageDirectory,
+                    uid: Number(packageUser[1])
+                });
+            }
         }
 
         // run postinstall hooks if any
         if (package.hooks && package.hooks.post) {
             logger.verbose('Running postinstall hook');
             await progress('running post-install hook');
-            await runExec({
-                command: package.hooks.post,
-                cwd: packageDirectory,
-                uid: Number(packageUser[1])
-            });
+            if (priviledged) {
+                await runExec({
+                    command: package.hooks.post
+                });
+            } else {
+                await runExec({
+                    command: package.hooks.post,
+                    cwd: packageDirectory,
+                    uid: Number(packageUser[1])
+                });
+            }
         }
     }
 }
