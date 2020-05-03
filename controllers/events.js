@@ -157,9 +157,10 @@ module.exports = ({iot, auth}) => {
             iot.subscribe(initChannels);
             
             // ready to go, start the dependencies
-            let { update } = await shadow.init({ iot, auth });
-            shadowUpdate = update;
-
+            await shadow.init({ iot, auth }).then(res => {
+                shadowUpdate = res.update;
+            }).catch(err => logger.error(err));
+            
             await jobs.init({ iot, auth });
             
             await tunnel.init({ channel: channel.internal.tunnel });

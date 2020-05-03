@@ -76,6 +76,8 @@ function promisifyJobActions(job) {
 // Private function to exec stuff in the shell
 //
 async function runExec({ command, uid, cwd }) {
+    logger.verbose('+ %s', command);
+    logger.verbose('+ in %s as %s', cwd, uid);
     let args = {
         cwd: cwd || process.cwd()
     };
@@ -413,51 +415,36 @@ async function installPackage({ job, updating, progress }) {
         if (package.hooks && package.hooks.pre) {
             logger.verbose('Running preinstall hook');
             await progress('running pre-install hook');
-            if (priviledged) {
-                await runExec({
-                    command: package.hooks.pre
-                });
-            } else {
-                await runExec({
-                    command: package.hooks.pre,
-                    cwd: packageDirectory,
-                    uid: Number(packageUser[1])
-                });
-            }
+            let args = {
+                command: package.hooks.pre,
+                cwd: packageDirectory
+            };
+            if (!priviledged) args.uid = Number(packageUser[1]);
+            await runExec(args);
         }
 
         // run install hook if any
         if (package.install) {
             logger.verbose('Running install hook');
             await progress('running package install');
-            if (priviledged) {
-                await runExec({
-                    command: package.install
-                });
-            } else {
-                await runExec({
-                    command: package.install,
-                    cwd: packageDirectory,
-                    uid: Number(packageUser[1])
-                });
-            }
+            let args = {
+                command: package.install,
+                cwd: packageDirectory
+            };
+            if (!priviledged) args.uid = Number(packageUser[1]);
+            await runExec(args);
         }
 
         // run postinstall hooks if any
         if (package.hooks && package.hooks.post) {
             logger.verbose('Running postinstall hook');
             await progress('running post-install hook');
-            if (priviledged) {
-                await runExec({
-                    command: package.hooks.post
-                });
-            } else {
-                await runExec({
-                    command: package.hooks.post,
-                    cwd: packageDirectory,
-                    uid: Number(packageUser[1])
-                });
-            }
+            let args = {
+                command: package.hooks.post,
+                cwd: packageDirectory
+            };
+            if (!priviledged) args.uid = Number(packageUser[1]);
+            await runExec(args);
         }
     }
 }
